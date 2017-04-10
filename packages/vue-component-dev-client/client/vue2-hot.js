@@ -1,22 +1,22 @@
 var Vue // late bind
+var version
 var map = window.__VUE_HOT_MAP__ = Object.create(null)
 var installed = false
-var isBrowserify = false
 var initHookName = 'beforeCreate'
 
 exports.install = function (vue, browserify) {
   if (installed) return
   installed = true
 
-  Vue = vue
-  isBrowserify = browserify
+  Vue = vue.__esModule ? vue.default : vue
+  version = Vue.version.split('.').map(Number)
 
   // compat with < 2.0.0-alpha.7
   if (Vue.config._lifecycleHooks.indexOf('init') > -1) {
     initHookName = 'init'
   }
 
-  exports.compatible = Number(Vue.version.split('.')[0]) >= 2
+  exports.compatible = version[0] >= 2
   if (!exports.compatible) {
     console.warn(
       '[HMR] You are using a version of vue-hot-reload-api that is ' +
@@ -43,7 +43,7 @@ exports.createRecord = function (id, options) {
   makeOptionsHot(id, options)
   map[id] = {
     Ctor: Vue.extend(options),
-    instances: []
+    instances: [],
   }
 }
 
@@ -87,39 +87,52 @@ function tryWrap (fn) {
     try { fn(id, arg) } catch (e) {
       console.error(e)
       console.warn('Something went wrong during Vue component hot-reload. Full reload required.')
+      throw e
     }
   }
 }
 
-exports.rerender = tryWrap(function (id, fns) {
+exports.rerender = tryWrap(function (id, options) {
   var record = map[id]
-  record.Ctor.options.render = fns.render
-  record.Ctor.options.staticRenderFns = fns.staticRenderFns
+  if (typeof options === 'function') {
+    options = options.options
+  }
+  record.Ctor.options.render = options.render
+  record.Ctor.options.staticRenderFns = options.staticRenderFns
   record.instances.slice().forEach(function (instance) {
-    instance.$options.render = fns.render
-    instance.$options.staticRenderFns = fns.staticRenderFns
+    instance.$options.render = options.render
+    instance.$options.staticRenderFns = options.staticRenderFns
     instance._staticTrees = [] // reset static trees
     instance.$forceUpdate()
   })
 })
 
 exports.reload = tryWrap(function (id, options) {
+  if (typeof options === 'function') {
+    options = options.options
+  }
   makeOptionsHot(id, options)
   var record = map[id]
-  record.Ctor.extendOptions = options
-  var newCtor = Vue.extend(options)
+  if (version[1] < 2) {
+    // preserve pre 2.2 behavior for global mixin handling
+    record.Ctor.extendOptions = options
+  }
+  var newCtor = record.Ctor.super.extend(options)
   record.Ctor.options = newCtor.options
   record.Ctor.cid = newCtor.cid
+  record.Ctor.prototype = newCtor.prototype
   if (newCtor.release) {
     // temporary global mixin strategy used in < 2.0.0-alpha.6
     newCtor.release()
   }
+  var needsReload = false
   record.instances.slice().forEach(function (instance) {
-    if (instance.$parent) {
-      instance.$parent.$forceUpdate()
+    if (instance.$vnode && instance.$vnode.context) {
+      instance.$vnode.context.$forceUpdate()
     } else {
       console.warn('Root or manually mounted instance modified. Full reload required.')
-      return true;
+      needsReload = true
     }
-  });
+  })
+  return needsReload
 })
